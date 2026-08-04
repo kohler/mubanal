@@ -126,8 +126,17 @@ byte-identical the difference is in the analysis, not in extraction.
 
 ### Known differences
 
-Two differences from banal are understood, and neither is a bug in either
+Three differences from banal are understood, and none is a bug in either
 program.
+
+**Columns** are found differently. banal reads them off the modal number of
+x-intervals per row band; mubanal looks for the vertical whitespace between
+columns, pools the candidates across the document -- a paper has one layout, so
+a gutter recurring on many pages is a column boundary and a gutter on one page
+is a table -- and lets each page take the document's gutters where its own ink
+leaves them clear. This disagrees with banal often, and deliberately: it is
+right on the pages a wide table or a spanning figure used to fool. Pass
+`--columns=mode` for banal's algorithm, and see `--debug-columns` for a trace.
 
 **Margins** are the weakest field. poppler and MuPDF accumulate glyph advances
 with a ~0.01% scale difference, and the 4pt output grid amplifies that to
@@ -144,6 +153,10 @@ There are no unit tests; correctness is established differentially against
 `src/banal` over a corpus. Agreement figures are deliberately not recorded here
 as both programs keep changing. Run `testmubanal.php` with `--verdict` and
 `--summary` to measure the current state.
+
+Because the column algorithms differ on purpose, agreement with banal is no
+longer the measure for that field. `testmubanal.php --corpus` scores column
+counts against hand-labelled documents and pages instead.
 
 ## License
 

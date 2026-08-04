@@ -16,6 +16,8 @@
 
 #include "mubanal.hh"
 
+#include <cstdio>
+
 #include <algorithm>
 #include <array>
 #include <cctype>
@@ -23,6 +25,10 @@
 #include <cstdlib>
 
 namespace mubanal {
+
+ColumnAlgo column_algo = ColumnAlgo::Gutter;
+bool debug_columns = false;
+
 namespace {
 
 // ------------------------------------------------------------- byte classes
@@ -636,6 +642,365 @@ void Page::calc_columns(const XMap& in) {
         colpos_.insert(colpos_.end(), {left_, left_ + width_});
     }
 }
+
+// ------------------------------------------------------------------ gutters
+
+namespace {
+
+// A run of whitespace in one row, between its ink or between ink and the edge
+// of the text block.
+struct Gap {
+    double l = 0, r = 0;
+    size_t row = 0;
+};
+
+// The longest stretch of consecutive rows with no ink anywhere in `g`.
+//
+// A run rather than a count, because what distinguishes a gutter interrupted by
+// a figure from a table that never had one is not how much of the page is
+// clear but whether any of it is clear *together*. A figure page carrying two
+// columns of text at the bottom clears the gutter over those rows and no
+// others; a full-width table leaves gaps wherever its cells happen to fall, and
+// they rarely line up twice running.
+size_t gutter_run(const std::vector<std::vector<double>>& rows, const Gutter& g) {
+    size_t run = 0, best = 0;
+    for (const auto& z : rows) {
+        if (z.empty()) {
+            continue;
+        }
+        bool hit = false;
+        for (size_t k = 0; k + 1 < z.size() && !hit; k += 2) {
+            hit = z[k] < g.r && z[k + 1] > g.l;
+        }
+        run = hit ? 0 : run + 1;
+        best = std::max(best, run);
+    }
+    return best;
+}
+
+}  // namespace
+
+// Find columns by locating the whitespace between them.
+//
+// The question a reader answers when they look at a page is "is there a gap
+// running down it?", and this asks that directly, where calc_columns above
+// infers columns from the modal shape of the row signature. The difference
+// shows on pages the mode does not fit: a spanning figure, a wide table, a
+// heading across both columns each contribute a row with one interval to a
+// two-column page, which drags the mode toward the wrong answer, but leaves a
+// gutter merely interrupted.
+//
+// A gutter is not sought as a wide band of low coverage. That fails on real
+// pages: a code listing set slightly wide of its column intrudes a few points
+// into the gutter, and evaluating the whole band then scores it as crossed even
+// though a narrower strip through it is clear on every row. The band is instead
+// found by erosion -- ask where a strip of the minimum interesting width fits
+// inside the most rows' whitespace -- and only widened afterwards, to the
+// largest strip those rows all leave clear. That is a lower bound on the true
+// gutter, and it cannot be spoiled by ink near its edges.
+//
+// Two properties fall out that the mode algorithm had to be patched for.
+// Slivers cannot arise, because a column is the region *between* accepted
+// gutters rather than an independently proposed interval -- a 1.5pt column
+// would need two gutters 1.5pt apart. And colpos is a partition by
+// construction, so its pairs cannot overlap.
+void Page::calc_columns_gutter(const XMap& in) {
+    ncols_ = 0;
+    colpos_.clear();
+    const double L = left_, R = left_ + width_;
+
+    // Clip to the text block: whitespace outside it is margin, not gutter.
+    // find_bounds has already dropped the outliers that would stretch it.
+    std::vector<std::vector<double>> rows;
+    for (const auto& z : in.rows) {
+        std::vector<double> zz;
+        for (size_t i = 0; i + 1 < z.size(); i += 2) {
+            double a = std::max(z[i], L), b = std::min(z[i + 1], R);
+            if (b > a) {
+                zz.insert(zz.end(), {a, b});
+            }
+        }
+        if (!zz.empty()) {
+            rows.push_back(std::move(zz));
+        }
+    }
+    // Kept unclipped: the document pass frames these against the *document's*
+    // text block, which is wider than this page's whenever the page left a
+    // column empty.
+    colrows_ = in.rows;
+    if (rows.size() < kGutterMinRows || R - L < kColMinWidth) {
+        // Too little to go on. Abstaining rather than guessing 1 keeps the page
+        // out of the document-level vote, as an empty result does above.
+        colpos_.insert(colpos_.end(), {L, R});
+        return;
+    }
+    const double nrows = double(rows.size());
+    const size_t need = size_t(std::ceil(kGutterClear * nrows));
+
+    // Every row's whitespace, including the ragged ends inside the text block.
+    std::vector<Gap> gaps;
+    for (size_t r = 0; r < rows.size(); ++r) {
+        const auto& z = rows[r];
+        double prev = L;
+        for (size_t i = 0; i + 1 < z.size(); i += 2) {
+            if (z[i] > prev) {
+                gaps.push_back({prev, z[i], r});
+            }
+            prev = std::max(prev, z[i + 1]);
+        }
+        if (R > prev) {
+            gaps.push_back({prev, R, r});
+        }
+    }
+
+    // Erode each gap by the minimum width: what is left is the set of positions
+    // where a gutter of that width could start. Sweeping those tells us, for
+    // every position, how many rows would leave such a strip clear.
+    std::vector<std::pair<double, int>> ev;
+    for (const Gap& g : gaps) {
+        if (g.r - g.l >= kGutterMinWidth) {
+            ev.push_back({g.l, 1});
+            ev.push_back({g.r - kGutterMinWidth, -1});
+        }
+    }
+    std::sort(ev.begin(), ev.end(), [](const auto& a, const auto& b) {
+        return a.first != b.first ? a.first < b.first : a.second > b.second;
+    });
+
+    // Each maximal stretch where enough rows agree yields one gutter, taken at
+    // the position where most of them do.
+    std::vector<Gutter> cand;
+    long live = 0;
+    long best = 0;
+    double bestx = 0;
+    for (size_t i = 0; i < ev.size(); ++i) {
+        live += ev[i].second;
+        if (size_t(live) >= need && live > best) {
+            best = live;
+            bestx = ev[i].first;
+        }
+        bool ends = i + 1 == ev.size() || size_t(live) < need;
+        if (ends && best > 0) {
+            // Widen to the largest strip every agreeing row leaves clear. Each
+            // such row has a gap covering [bestx, bestx + kGutterMinWidth], so
+            // the intersection is at least that wide.
+            Gutter g;
+            g.l = L;
+            g.r = R;
+            for (const Gap& gap : gaps) {
+                if (gap.l <= bestx && gap.r >= bestx + kGutterMinWidth) {
+                    g.l = std::max(g.l, gap.l);
+                    g.r = std::min(g.r, gap.r);
+                }
+            }
+            g.clear = double(best) / nrows;
+            if (debug_columns) {
+                std::fprintf(stderr, "  page %zu cand %.1f-%.1f w %.1f clear %.2f\n",
+                             index_ + 1, pdf2pt(g.l), pdf2pt(g.r),
+                             pdf2pt(g.r - g.l), g.clear);
+            }
+            cand.push_back(g);
+            best = 0;
+        }
+    }
+
+    gutters_ = cand;
+    accept_gutters(cand, L, R);
+}
+
+// Cut the page at whichever of `gutters` it can take, and measure the columns
+// that result.
+//
+// Split out from the search because the document-level pass reruns it with the
+// document's gutters in place of the page's own; see Doc::calc_column_layout.
+// A column region is counted whether or not it holds ink, which is what lets a
+// page of a two-column paper that filled only its left column still report two.
+// For the same reason the frame is passed in rather than read from the page:
+// such a page's own text block covers only the column it used, leaving no room
+// on the other side of the gutter for the column that is there but empty.
+void Page::accept_gutters(const std::vector<Gutter>& gutters, double L, double R) {
+    colpos_.clear();
+
+    // Take the clearest gutters that leave room for a column on either side.
+    // Ordering by clarity rather than position means a spurious gap loses to a
+    // real one when both cannot be taken.
+    std::vector<Gutter> cand = gutters;
+    std::stable_sort(cand.begin(), cand.end(), [](const Gutter& a, const Gutter& b) {
+        return a.clear > b.clear;
+    });
+    std::vector<double> cut;   // accepted gutter edges, kept sorted by position
+    for (const Gutter& g : cand) {
+        size_t i = 0;
+        while (i < cut.size() && cut[i] < g.l) {
+            i += 2;
+        }
+        if (i < cut.size() && cut[i] < g.r) {
+            continue;                     // overlaps one already accepted
+        }
+        double lo = i == 0 ? L : cut[i - 1];
+        double hi = i == cut.size() ? R : cut[i];
+        if (g.l - lo >= kColMinWidth && hi - g.r >= kColMinWidth) {
+            cut.insert(cut.begin() + long(i), {g.l, g.r});
+        }
+    }
+
+    // Columns are the regions between the cuts, measured to the ink they hold
+    // rather than to the cut itself, so colpos stays comparable with the mode
+    // algorithm's. An empty region keeps the cut's own bounds.
+    for (size_t i = 0; i <= cut.size(); i += 2) {
+        double lo = i == 0 ? L : cut[i - 1];
+        double hi = i == cut.size() ? R : cut[i];
+        double cl = hi, cr = lo;
+        for (const auto& z : colrows_) {
+            for (size_t k = 0; k + 1 < z.size(); k += 2) {
+                if (z[k] < hi && z[k + 1] > lo) {
+                    cl = std::min(cl, std::max(z[k], lo));
+                    cr = std::max(cr, std::min(z[k + 1], hi));
+                }
+            }
+        }
+        colpos_.insert(colpos_.end(), cr > cl ? std::initializer_list<double>{cl, cr}
+                                              : std::initializer_list<double>{lo, hi});
+    }
+    ncols_ = int(colpos_.size() / 2);
+}
+
+// Settle the column layout across the whole document.
+//
+// A paper has one layout, so a gutter at the same place on many pages is strong
+// evidence and a gutter on exactly one page is nearly none. That is the
+// difference between a column boundary and the gaps inside a wide table, which
+// no amount of looking at the table's own page will tell you: on its own page
+// the table's gaps run its full height and look exactly like columns.
+//
+// The document supplies the hypotheses and each page decides which of them it
+// can take, rather than the document overriding the page. A page that genuinely
+// breaks the layout -- a full-width figure -- supports none of the document
+// gutters and keeps its own answer of one column.
+void Doc::calc_column_layout() {
+    // The row cache exists only for this pass, however it exits.
+    struct Free {
+        Doc* doc;
+        ~Free() {
+            for (Page& page : doc->pages_) {
+                page.colrows_.clear();
+                page.colrows_.shrink_to_fit();
+                page.gutters_.clear();
+                page.gutters_.shrink_to_fit();
+            }
+        }
+    } freer{this};
+
+    // Cluster candidates by the x they share. Sorting by left edge and keeping
+    // a running intersection is enough: a cluster is a set of bands with a
+    // common point, which is what "the same gutter" means here.
+    std::vector<Gutter> all;
+    size_t npages_seen = 0;
+    for (const Page& page : pages_) {
+        npages_seen += !page.gutters_.empty();
+        all.insert(all.end(), page.gutters_.begin(), page.gutters_.end());
+    }
+    if (npages_seen < 2) {
+        return;                  // nothing to pool; page-local answers stand
+    }
+    std::sort(all.begin(), all.end(), [](const Gutter& a, const Gutter& b) {
+        return a.l < b.l;
+    });
+
+    // The document's own text block, as the median of the pages'. A page that
+    // filled one column has a text block only that wide, so its own bounds
+    // cannot frame the columns; the document's can.
+    std::vector<double> dl, dr;
+    for (const Page& page : pages_) {
+        if (page.has_textbb_) {
+            dl.push_back(page.left_);
+            dr.push_back(page.left_ + page.width_);
+        }
+    }
+    if (dl.empty()) {
+        return;
+    }
+    std::sort(dl.begin(), dl.end());
+    std::sort(dr.begin(), dr.end());
+    const double docl = dl[dl.size() / 2], docr = dr[dr.size() / 2];
+
+    std::vector<Gutter> doc_gutters;
+    for (size_t i = 0; i < all.size(); ) {
+        // Group bands that overlap, then take the median edges rather than the
+        // intersection. Intersecting a dozen pages' bands shrinks the result
+        // toward a point -- and a single page whose band sits slightly off
+        // splits one gutter in two -- where the median just ignores it.
+        double reach = all[i].r;
+        size_t j = i + 1;
+        for (; j < all.size() && all[j].l < reach; ++j) {
+            reach = std::max(reach, all[j].r);
+        }
+        std::vector<double> ls, rs;
+        for (size_t k = i; k < j; ++k) {
+            ls.push_back(all[k].l);
+            rs.push_back(all[k].r);
+        }
+        std::sort(ls.begin(), ls.end());
+        std::sort(rs.begin(), rs.end());
+        double lo = ls[ls.size() / 2], hi = rs[rs.size() / 2];
+        if (hi - lo < kGutterMinWidth) {
+            i = j;
+            continue;
+        }
+        // Count pages, not candidates: one page cannot vouch for a gutter twice.
+        std::vector<size_t> pgs;
+        for (const Page& page : pages_) {
+            for (const Gutter& g : page.gutters_) {
+                if (g.l < hi && g.r > lo) {
+                    pgs.push_back(page.index_);
+                    break;
+                }
+            }
+        }
+        if (double(pgs.size()) >= kGutterSupport * double(npages_seen)
+            && pgs.size() >= 2) {
+            Gutter g;
+            g.l = lo;
+            g.r = hi;
+            g.clear = double(pgs.size()) / double(npages_seen);
+            doc_gutters.push_back(g);
+        }
+        if (debug_columns) {
+            std::fprintf(stderr, "  doc cand %.1f-%.1f on %zu/%zu pages%s\n",
+                         pdf2pt(lo), pdf2pt(hi), pgs.size(), npages_seen,
+                         double(pgs.size()) >= kGutterSupport * double(npages_seen)
+                         && pgs.size() >= 2 ? "" : "  REJECT");
+        }
+        i = j;
+    }
+
+    for (Page& page : pages_) {
+        if (page.colrows_.empty()) {
+            continue;
+        }
+        // A page takes a document gutter when its own ink leaves that band
+        // clear over a run of rows -- not when it found the gutter itself. The difference is the
+        // page that used only one of its columns: there is no whitespace to
+        // find where the second column would be, because the page's text block
+        // stops at the first, but neither is there anything in the way.
+        // Candidates the page found alone are dropped: on this evidence they
+        // are furniture, not layout.
+        std::vector<Gutter> keep;
+        for (const Gutter& d : doc_gutters) {
+            size_t run = gutter_run(page.colrows_, d);
+            if (debug_columns) {
+                std::fprintf(stderr, "  take p%zu gutter %.1f-%.1f run %zu%s\n",
+                             page.index_ + 1, pdf2pt(d.l), pdf2pt(d.r), run,
+                             run >= kGutterTakeRun ? "" : "  REJECT");
+            }
+            if (run >= kGutterTakeRun) {
+                keep.push_back(d);
+            }
+        }
+        page.accept_gutters(keep, docl, docr);
+    }
+}
+
 
 void Page::calc_leading(const std::vector<Text>& texts, int bfs) {
     double minlead = in2pdf(1.0 / 16.0);
@@ -1312,7 +1677,11 @@ void Doc::analyze_page(Page& page, const RawPage& rp) {
     page.height_ = b0 - t0;
     page.has_textbb_ = true;
 
-    page.calc_columns(xm);
+    if (column_algo == ColumnAlgo::Gutter) {
+        page.calc_columns_gutter(xm);
+    } else {
+        page.calc_columns(xm);
+    }
     if (page.colpos_.size() == 4
         && page.colpos_[2] - page.colpos_[1] <= in2pdf(1)) {
         recent_colpos_ = page.colpos_;
@@ -1389,6 +1758,9 @@ Doc analyze(PageSource& src) {
     }
 
     doc.calc_page_types();
+    if (column_algo == ColumnAlgo::Gutter) {
+        doc.calc_column_layout();
+    }
     doc.calc_columns();
     return doc;
 }

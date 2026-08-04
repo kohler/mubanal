@@ -24,7 +24,9 @@ void usage(std::ostream& out) {
            "  -no-time      omit the \"at\" timestamp\n"
            "  --dump-runs   print the extracted run list instead of analysing\n"
            "  --runs=FILE   analyse a stored run list instead of a PDF\n"
+           "  --columns=ALG column detection: gutter (default), mode\n"
            "  --rot=MODE    rotated text: skip (default), skew, keep\n"
+           "  --debug-columns  trace column detection on stderr\n"
            "  --trim=MODE   trim run edges: ascii (default), none\n"
            "  --stext=OPTS  MuPDF stext options, comma separated (calibration)\n"
            "  -version      print version\n";
@@ -112,6 +114,17 @@ int main(int argc, char** argv) {
             }
         } else if (opt_is(a, "trim", &arg)) {
             trim = arg == "none" ? Trim::None : Trim::Ascii;
+        } else if (opt_is(a, "columns", &arg)) {
+            if (arg == "gutter") {
+                column_algo = ColumnAlgo::Gutter;
+            } else if (arg == "mode") {
+                column_algo = ColumnAlgo::Mode;
+            } else {
+                std::cerr << "mubanal: unknown column algorithm " << arg << "\n";
+                return 1;
+            }
+        } else if (opt_is(a, "debug-columns")) {
+            debug_columns = true;
         } else if (opt_is(a, "rot", &arg)) {
             rot = arg == "keep" ? Rot::Keep : (arg == "skew" ? Rot::Skew : Rot::Skip);
         } else if (opt_is(a, "version") || opt_is(a, "v")) {

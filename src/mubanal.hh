@@ -74,6 +74,31 @@ constexpr unsigned kLightSkip = 220;
 constexpr int kMinNchars = 800;
 constexpr int kGrid = 4;
 
+// How to find columns. `Gutter`, the default, looks for the vertical whitespace
+// *between* columns and cuts there. `Mode` is banal's: take the modal number of
+// x-intervals per row band, then read the column edges off the rows that match
+// it. Both are kept so they can be scored against the same corpus; `Mode` is
+// what the numbers in that comparison are measured against.
+enum class ColumnAlgo { Mode, Gutter };
+extern ColumnAlgo column_algo;
+extern bool debug_columns;
+
+// A vertical band of whitespace that might separate two columns.
+struct Gutter {
+    double l = 0, r = 0;
+    double clear = 0;   // fraction of the page's body rows it is clear over
+};
+
+// Gutter parameters, in decipoints or as fractions of the body rows.
+// Deliberately loose to start; the corpus is what tightens them.
+constexpr double kGutterMinWidth = 57.6;   // 0.08in, narrower than any real one
+constexpr double kColMinWidth = 576.0;     // 0.8in; 3-column text is ~91pt wide
+constexpr double kGutterClear = 0.6;       // rows a gutter must be clear over
+constexpr double kGutterOpen = 0.35;       // rows that may cross a candidate
+constexpr size_t kGutterMinRows = 4;       // fewer rows than this and we abstain
+constexpr double kGutterSupport = 1.0 / 3;  // pages a document gutter recurs on
+constexpr size_t kGutterTakeRun = 4;       // consecutive clear rows to take one
+
 // Counter map keyed by double, standing in for banal's Perl hashes. Ordered,
 // which is what makes mode() break ties toward the smaller key as banal's
 // modevalkey does -- every document-level number is a mode, so that matters.
@@ -183,6 +208,10 @@ struct Page {
     double pw_ = 0, ph_ = 0;               // page box, decipoints
     int ncols_ = 0;
     std::vector<double> colpos_;
+    // Gutter candidates and the clipped row extents behind them, kept only
+    // until the document-level pass has had its say; see Doc::calc_column_layout.
+    std::vector<Gutter> gutters_;
+    std::vector<std::vector<double>> colrows_;
     bool has_textbb_ = false;
     double top_, left_, width_, height_;
     size_t nchars_;
@@ -197,6 +226,8 @@ struct Page {
     std::string type_ = "body";
 
     void calc_columns(const XMap& xmap);
+    void calc_columns_gutter(const XMap& xmap);
+    void accept_gutters(const std::vector<Gutter>& gutters, double l, double r);
     void calc_leading(const std::vector<Text>& texts, int bfs);
     void calc_nwords(const std::vector<Text>& texts, int bfs);
     AppendixStatus calc_page_type(AppendixStatus status);
@@ -232,6 +263,7 @@ struct Doc {
                                                 int bfs);
     void calc_page_types();
     void calc_columns();
+    void calc_column_layout();
 };
 
 Doc analyze(PageSource& src);
