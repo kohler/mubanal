@@ -1644,6 +1644,21 @@ struct HeadingAnalysis {
 
 }  // namespace
 
+// Is the page set too thinly to be prose?
+//
+// A page of plots carries plenty of characters -- tick labels, axis titles,
+// legends -- and on one such page 915 of them counted as body-sized by the
+// page's own reckoning, enough to clear kMinNchars and be typed as prose. What
+// it does not carry is *density*: those characters are scattered over the whole
+// block rather than filling it.
+bool Page::sparse() const {
+    if (!has_textbb_ || width_ <= 0 || height_ <= 0) {
+        return false;
+    }
+    double sqin = pdf2pt(width_) * pdf2pt(height_) / 5184.0;
+    return sqin > 0 && double(allchars_) / sqin < kMinCharDensity;
+}
+
 AppendixStatus Page::calc_page_type(AppendixStatus cur) {
     AppendixStatus next = cur;
 
@@ -1698,7 +1713,7 @@ AppendixStatus Page::calc_page_type(AppendixStatus cur) {
         type_ = "appendix";
     } else if (cur.acks_refs) {
         type_ = "bib";
-    } else if (nchars_ < kMinNchars || ncols_ == 0) {
+    } else if (nchars_ < kMinNchars || ncols_ == 0 || sparse()) {
         type_ = "figure";
     } else {
         type_ = "body";
@@ -1937,10 +1952,12 @@ void Doc::analyze_page(Page& page, const RawPage& rp) {
     page.calc_leading(texts, fontsize);
 
     page.nchars_ = 0;
+    page.allchars_ = 0;
     for (const auto& [size, count] : alen) {
         if (size >= fontsize && size <= 1.5 * fontsize) {
             page.nchars_ += count;
         }
+        page.allchars_ += count;
     }
 
     if (bfs) {

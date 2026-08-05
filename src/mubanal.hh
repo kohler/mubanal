@@ -79,6 +79,9 @@ constexpr double kGlyphDescent = 0.5;      // clamp below it
 
 constexpr unsigned kLightSkip = 220;
 constexpr int kMinNchars = 800;
+// Characters per square inch of text block, below which a page is figures
+// rather than prose. Measured over every character, not just body-size.
+constexpr double kMinCharDensity = 25.0;
 constexpr int kGrid = 4;
 // Half a point, absorbed before snapping to kGrid. Snapping outward then means
 // "round the measurement to the nearest point, then take the grid boundary
@@ -242,7 +245,8 @@ struct Page {
     std::vector<std::vector<double>> colrows_;
     bool has_textbb_ = false;
     double top_, left_, width_, height_;
-    size_t nchars_;
+    size_t nchars_;                  // body-sized characters; reported as "c"
+    size_t allchars_;                // *any* characters regardless of size
     std::optional<size_t> nwords_;
     int bodyfontsize_ = 0, reffontsize_ = 0;   // decipoints; 0 = unset
     std::optional<double> lead_;
@@ -259,6 +263,7 @@ struct Page {
     void calc_leading(const std::vector<Text>& texts, int bfs);
     void calc_nwords(const std::vector<Text>& texts, int bfs);
     AppendixStatus calc_page_type(AppendixStatus status);
+    bool sparse() const;
 };
 
 struct Doc {
