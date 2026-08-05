@@ -670,27 +670,25 @@ bool page_votes(const Page& page) {
 
 // How much of a page's ink stands in a gutter: the rows that leave it clear,
 // and the row count. The document proposes the gutter; this asks whether this
-// page contradicts it. kGutterTakeClear evaluates this fraction.
+// page contradicts it. kGutterClearArea evaluates this fraction.
 struct GutterFit {
-    size_t clear = 0;   // rows with no ink in the gutter at all
     size_t nrows = 0;
+    double coverage = 0;   // gutter area covered, in units of rows
 };
 
 GutterFit gutter_fit(const std::vector<std::vector<double>>& rows, const Gutter& g) {
     GutterFit f;
+    const double w = g.r - g.l;
     for (const auto& z : rows) {
         if (z.empty()) {
             continue;
         }
         ++f.nrows;
         for (size_t k = 0; k + 1 < z.size(); k += 2) {
-            if (z[k] < g.r && z[k + 1] > g.l) {
-                goto hit;
-            }
+            f.coverage += std::max(0.0, std::min(z[k + 1], g.r) - std::max(z[k], g.l));
         }
-        ++f.clear;
-    hit: ;
     }
+    f.coverage /= w;
     return f;
 }
 
@@ -740,8 +738,12 @@ void Page::calc_columns_gutter(XMap&& in) {
     // nothing reads it after this, which is why the parameter is an rvalue.
     colrows_ = std::move(in.rows);
     if (rows.size() < kGutterMinRows || R - L < kColMinWidth) {
-        // Too little to go on. Abstaining rather than guessing 1 keeps the page
-        // out of the document-level vote, as an empty result does above.
+        // Too little to go on to propose anything. ncols_ stays 0, which keeps
+        // the page out of the document-level vote -- but only until the
+        // document pass, which runs accept_gutters over every page and will
+        // give this one a count if the document found a gutter it can take.
+        // That is deliberate: a nearly empty last page cannot discover a gutter
+        // and should still report the layout it is set in.
         colpos_.insert(colpos_.end(), {L, R});
         return;
     }
@@ -862,7 +864,19 @@ void Page::calc_columns_gutter(XMap&& in) {
         // whitespace between the body and something in the margin -- line
         // numbers, a running head wider than the text -- reaches the edge of the
         // block by construction, so one side of it has no room at all.
-        bool room = g.l - L >= kColMinWidth && R - g.r >= kColMinWidth;
+        //
+        // The second test applies the standard the document pass will use, to
+        // the page's own ink. A page has no business proposing a gutter that
+        // its own ink contradicts: such a candidate could not survive the take
+        // test anyway, but it can still swell a cluster on the way there, and
+        // on a document too short to pool it is accepted outright -- which is
+        // how a one-page table of contents became two columns on a band clear
+        // over a fifth of it.
+        GutterFit pf = gutter_fit(rows, g);
+        bool room = g.l - L >= kColMinWidth
+            && R - g.r >= kColMinWidth
+            && pf.nrows > 0
+            && pf.coverage <= kGutterClearArea * pf.nrows;
         if (debug_columns) {
             std::fprintf(stderr, "  page %zu cand %.1f-%.1f w %.1f clear %.2f%s\n",
                          index_ + 1, pdf2pt(g.l), pdf2pt(g.r),
@@ -913,13 +927,17 @@ void Page::accept_gutters(const std::vector<Gutter>& gutters, double L, double R
         }
     }
 
-    // Real multi-column layouts have columns of equal width. Three columns of
-    // 148, 93 and 251 points are not a layout; they are a two-column page whose
-    // left column got split by something inside it, and dropping that split
-    // leaves 251 and 251. Applied only from three columns up, where the prior is
-    // strong: two-column designs with a narrow sidebar are ordinary, three-column
-    // designs with one are not.
-    while (cut.size() >= 4) {
+    // Real multi-column layouts have columns of comparable width. Three columns
+    // of 148, 93 and 251 points are not a layout; they are a two-column page
+    // whose left column got split by something inside it, and dropping that
+    // split leaves 251 and 251.
+    //
+    // Two columns are held to a looser bound than three or more. A two-column
+    // design with a narrow sidebar is ordinary and a three-column one with a
+    // narrow sidebar is not, so the prior is weaker -- but it is not absent,
+    // and a "two-column" page of 64 points beside 262 is a table column
+    // boundary rather than a layout.
+    while (!cut.empty()) {
         auto spread = [&](const std::vector<double>& c) {
             double lo = R - L, hi = 0;
             for (size_t i = 0; i <= c.size(); i += 2) {
@@ -929,7 +947,7 @@ void Page::accept_gutters(const std::vector<Gutter>& gutters, double L, double R
             }
             return lo > 0 ? hi / lo : R - L;
         };
-        if (spread(cut) <= kColBalance) {
+        if (spread(cut) <= (cut.size() >= 4 ? kColBalance : kColBalance2)) {
             break;
         }
         // Drop whichever gutter leaves the most even columns behind.
@@ -976,10 +994,13 @@ void Page::accept_gutters(const std::vector<Gutter>& gutters, double L, double R
 // no amount of looking at the table's own page will tell you: on its own page
 // the table's gaps run its full height and look exactly like columns.
 //
-// The document supplies the hypotheses and each page decides which of them it
-// can take, rather than the document overriding the page. A page that genuinely
-// breaks the layout -- a full-width figure -- supports none of the document
-// gutters and keeps its own answer of one column.
+// The document supplies the hypotheses and each page decides which of them its
+// own ink can bear. Note that this *replaces* the page-local result rather than
+// refining it: accept_gutters runs again below on every page, so a candidate a
+// page found alone never reaches the output, and a page that takes none of the
+// document's gutters reports one column -- not because it decided so, but
+// because it was left with nothing to cut on. Only a document too short to pool
+// keeps what its pages worked out for themselves.
 void Doc::calc_column_layout() {
     // The row cache exists only for this pass, however it exits.
     struct Free {
@@ -1059,9 +1080,15 @@ void Doc::calc_column_layout() {
         }
     }
 
+    // Nothing to pool. The page-local answers stand -- collapsing them to one
+    // column was tried and is much worse, because short multi-column documents
+    // are ordinary: a one-page abstract, a poster, a paper whose second column
+    // is a figure. What goes wrong here is narrower than "no corroboration",
+    // and is handled by the width and balance constraints instead.
     if (npages_seen < 2) {
-        return;                  // nothing to pool; page-local answers stand
+        return;
     }
+
     std::sort(all.begin(), all.end(), [](const Gutter& a, const Gutter& b) {
         return a.l < b.l;
     });
@@ -1152,11 +1179,11 @@ void Doc::calc_column_layout() {
         for (const Gutter& d : doc_gutters) {
             GutterFit f = gutter_fit(page.colrows_, d);
             bool take = f.nrows > 0
-                && double(f.clear) >= kGutterTakeClear * f.nrows;
+                && f.coverage <= kGutterClearArea * f.nrows;
             if (debug_columns) {
-                std::fprintf(stderr, "  take p%zu gutter %.1f-%.1f clear %zu/%zu%s\n",
+                std::fprintf(stderr, "  take p%zu gutter %.1f-%.1f coverage %.1f/%zu%s\n",
                              page.index_ + 1, pdf2pt(d.l), pdf2pt(d.r),
-                             f.clear, f.nrows, take ? "" : "  REJECT");
+                             f.coverage, f.nrows, take ? "" : "  REJECT");
             }
             if (take) {
                 keep.push_back(d);

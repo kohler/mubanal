@@ -89,9 +89,10 @@ struct Gutter {
     double clear = 0;   // fraction of the page's body rows it is clear over
 };
 
-// Gutter parameters, in decipoints or as fractions of the body rows.
-// Deliberately loose to start; the corpus is what tightens them.
-constexpr double kGutterMinWidth = 57.6;   // 0.08in, narrower than any real one
+// Gutter parameters: decipoints, counts of rows or pages, or fractions --
+// of the gutter's area, of the pages, of the widest column. Deliberately loose
+// to start; the corpus is what tightened them.
+constexpr double kGutterMinWidth = 75.0;   // 7.5pt; narrowest real one here is 9.1pt
 constexpr double kColMinWidth = 576.0;     // 0.8in; 3-column text is ~91pt wide
 constexpr long kGutterMinSupport = 2;      // rows that must leave a band clear
 constexpr size_t kGutterMaxPerPage = 2;    // gutters one page may propose
@@ -99,7 +100,8 @@ constexpr size_t kDocColumnPages = 30;     // body pages that decide the documen
 constexpr size_t kGutterMinRows = 4;       // fewer rows than this and we abstain
 constexpr double kGutterSupport = 1.0 / 3; // pages a document gutter recurs on
 constexpr double kColBalance = 2.0;        // widest column / narrowest, 3+ columns
-constexpr double kGutterTakeClear = 0.50;  // or this fraction of rows clear
+constexpr double kColBalance2 = 3.0;       // ditto, two columns
+constexpr double kGutterClearArea = 0.50;  // fraction of gutter area clear
 
 // Counter map keyed by double, standing in for banal's Perl hashes. Ordered,
 // which is what makes mode() break ties toward the smaller key as banal's
