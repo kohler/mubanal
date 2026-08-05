@@ -8,7 +8,7 @@
 // port was originally checked against banal's own pdftohtml input.
 //
 // Format, matching --dump-runs:
-//   {"pages":[{"w":N,"h":N,"runs":[[top,left,w,h,size,"font",lum,"text"],...]}]}
+//   {"pages":[{"w":N,"h":N,"runs":[[top,left,w,h,size,"font",lum,"text",base],...]}]}
 
 #include "mubanal.hh"
 
@@ -62,6 +62,8 @@ public:
                 run.r = run.l + jr[2].asDouble();
                 run.b = run.t + jr[3].asDouble();
                 run.size = jr[4].asDouble();
+                // Older run lists have no baseline; 0 falls back to the top.
+                run.base = jr.size() > 8 ? jr[8].asDouble() : 0.0;
                 run.lum = jr[6].asDouble();
                 run.text = jr[7].asString();
                 run.nchars = int(u8_length(run.text));
@@ -108,6 +110,7 @@ void dump_runs(PageSource& src) {
             jr.append("");
             jr.append(run.lum);
             jr.append(run.text);
+            jr.append(run.base);
             jruns.append(std::move(jr));
         }
         jp["runs"] = std::move(jruns);

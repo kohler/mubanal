@@ -1202,7 +1202,7 @@ void Page::calc_leading(const std::vector<Text>& texts, int bfs) {
         std::vector<double> ypos;
         for (const auto& t : texts) {
             if (t.sz >= bfs && t.l <= x && t.r >= x) {
-                ypos.push_back(t.t);
+                ypos.push_back(t.base > 0 ? t.base : t.t);
             }
         }
         std::sort(ypos.begin(), ypos.end());
@@ -1828,11 +1828,8 @@ void Doc::analyze_page(Page& page, const RawPage& rp) {
         if (r.lum >= kLightSkip) {
             continue;
         }
-        double top = rpdf(r.t), left = rpdf(r.l);
-        // banal rounds the width and height, then adds them to the rounded
-        // origin. rpdf() quantizes to 1/8, so rpdf(t) + rpdf(b - t) is not
-        // rpdf(b): rounding the far edge directly shifts it by up to 1/8pt.
-        double bottom = top + rpdf(r.b - r.t), right = left + rpdf(r.r - r.l);
+        double top = rpdf(r.t), left = rpdf(r.l),
+            bottom = rpdf(r.b), right = rpdf(r.r);
         left = std::max(0.0, left);
         top = std::max(0.0, top);
         right = std::min(right, page.pw_);
@@ -1841,6 +1838,7 @@ void Doc::analyze_page(Page& page, const RawPage& rp) {
             continue;
         }
         Text t;
+        t.base = rpdf(r.base);
         t.t = top;
         t.l = left;
         t.r = right;

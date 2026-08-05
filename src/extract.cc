@@ -39,6 +39,7 @@ namespace {
 struct Glyph {
     char32_t c;
     double x0, x1, y0, y1;
+    double base;
 };
 
 // banal composites a translucent colour over white before testing lightness.
@@ -103,6 +104,9 @@ struct RunBuilder {
         run.r = a->x1;
         run.t = a->y0;
         run.b = a->y1;
+        // Runs split whenever the font size changes, so a superscript is
+        // already a run of its own and the glyphs here share one baseline.
+        run.base = a->base;
         run.size = size;
         run.lum = lum;
         run.text.reserve(size_t(z - a));
@@ -198,12 +202,34 @@ public:
                             rb_.lum = lightness(unsigned(c->argb));
                             rb_.open = true;
                         }
+                        // A glyph box taller than kGlyphMaxHeight times the
+                        // glyph's own size is a font defect, not a measurement.
+                        // MuPDF reads these from the font program rather than
+                        // from the outline, so a subsetted font carrying a bad
+                        // per-glyph box -- or its whole FontBBox, sized for
+                        // large delimiters -- is reported verbatim, and
+                        // FZ_STEXT_ACCURATE_BBOXES does not help: one 7.4pt
+                        // beta came back 41.5pt tall either way and pulled a
+                        // page's text block 12pt above where any ink was.
+                        //
+                        // Over 3M glyphs, including equation-heavy papers whose
+                        // large delimiters are the obvious thing to break, no
+                        // legitimate box exceeds 3x its size; 99.99% are under
+                        // 1.8. So clamp back to the baseline, which is measured
+                        // independently of the box and stays right.
+                        double gy0 = std::min(c->quad.ul.y, c->quad.ur.y);
+                        double gy1 = std::max(c->quad.ll.y, c->quad.lr.y);
+                        if (c->size > 0
+                            && gy1 - gy0 > kGlyphMaxHeight * c->size) {
+                            gy0 = std::max(gy0, c->origin.y - kGlyphAscent * c->size);
+                            gy1 = std::min(gy1, c->origin.y + kGlyphDescent * c->size);
+                        }
                         rb_.glyphs.push_back(Glyph{
                             char32_t(c->c),
                             std::min(c->quad.ul.x, c->quad.ll.x),
                             std::max(c->quad.ur.x, c->quad.lr.x),
-                            std::min(c->quad.ul.y, c->quad.ur.y),
-                            std::max(c->quad.ll.y, c->quad.lr.y)
+                            gy0, gy1,
+                            c->origin.y
                         });
                     }
                 }
@@ -226,6 +252,34 @@ private:
     int stext_flags_;
     size_t npages_ = 0;
 };
+
+int stext_flag(std::string_view name) {
+    static const struct { const char* name; int flag; } flags[] = {
+        {"ligatures", FZ_STEXT_PRESERVE_LIGATURES},
+        {"whitespace", FZ_STEXT_PRESERVE_WHITESPACE},
+        {"images", FZ_STEXT_PRESERVE_IMAGES},
+        {"inhibit-spaces", FZ_STEXT_INHIBIT_SPACES},
+        {"dehyphenate", FZ_STEXT_DEHYPHENATE},
+        {"spans", FZ_STEXT_PRESERVE_SPANS},
+        {"clip", FZ_STEXT_CLIP},
+        {"structure", FZ_STEXT_COLLECT_STRUCTURE},
+        {"accurate-bboxes", FZ_STEXT_ACCURATE_BBOXES},
+        {"accurate-ascenders", FZ_STEXT_ACCURATE_ASCENDERS},
+        {"accurate-side-bearings", FZ_STEXT_ACCURATE_SIDE_BEARINGS},
+        {"segment", FZ_STEXT_SEGMENT},
+        {"table-hunt", FZ_STEXT_TABLE_HUNT}
+    };
+    for (const auto& f : flags) {
+        if (name == f.name) {
+            return f.flag;
+        }
+    }
+    return -1;
+}
+
+int stext_default_flags() {
+    return FZ_STEXT_ACCURATE_BBOXES;
+}
 
 std::unique_ptr<PageSource> open_pdf(const std::string& filename, Rot rot,
                                      Trim trim, int stext_flags) {

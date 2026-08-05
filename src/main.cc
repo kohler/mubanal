@@ -28,7 +28,9 @@ void usage(std::ostream& out) {
            "  --rot=MODE    rotated text: skip (default), skew, keep\n"
            "  --debug-columns  trace column detection on stderr\n"
            "  --trim=MODE   trim run edges: ascii (default), none\n"
-           "  --stext=OPTS  MuPDF stext options, comma separated (calibration)\n"
+           "  --stext=OPTS  MuPDF stext options, comma separated (calibration);\n"
+           "                accurate-bboxes is on by default, no-accurate-bboxes\n"
+           "                turns it off\n"
            "  -version      print version\n";
 }
 
@@ -63,7 +65,14 @@ int main(int argc, char** argv) {
     Trim trim = Trim::Ascii;
     bool dump = false;
     std::string runs_file, file;
-    int stext_flags = 0;
+    // Accurate bboxes by default. Without them MuPDF reports each glyph's
+    // declared font box, which for a math symbol set inline in a text line can
+    // be half again as tall as the line and hang well below it -- 17.3pt
+    // against 12.0pt at the same nominal size, on the same baseline. That
+    // inflates the text block downward and raises `textblock` complaints
+    // against papers whose text block is fine, which is the worst direction
+    // for a format check to be wrong in.
+    int stext_flags = mubanal::stext_default_flags();
 
     for (int i = 1; i < argc; ++i) {
         std::string_view a = argv[i], arg;
@@ -91,18 +100,13 @@ int main(int argc, char** argv) {
             for (size_t p = 0; p < arg.size(); ) {
                 size_t q = arg.find(',', p);
                 auto name = arg.substr(p, q == std::string::npos ? q : q - p);
-                if (name == "ligatures") {
-                    stext_flags |= 1;
-                } else if (name == "whitespace") {
-                    stext_flags |= 2;
-                } else if (name == "inhibit-spaces") {
-                    stext_flags |= 8;
-                } else if (name == "dehyphenate") {
-                    stext_flags |= 16;
-                } else if (name == "spans") {
-                    stext_flags |= 32;
-                } else if (name == "accurate-bboxes") {
-                    stext_flags |= 512;
+                // A leading "no-" clears the option instead of setting it,
+                // which is the only way to switch off one that is on by
+                // default.
+                bool off = name.substr(0, 3) == "no-";
+                int flag = stext_flag(off ? name.substr(3) : name);
+                if (flag >= 0) {
+                    stext_flags = off ? (stext_flags & ~flag) : (stext_flags | flag);
                 } else if (!name.empty()) {
                     std::cerr << "mubanal: unknown stext option " << name << "\n";
                     return 1;

@@ -100,10 +100,22 @@ void report_json(const Doc& doc, const ReportOpts& opt) {
         dpw[pd.pw] += 1;
         dph[pd.ph] += 1;
         if (page.has_textbb_) {
-            double tl = std::floor(pdf2pt(page.left_) / kGrid) * kGrid;
-            double tt = std::floor(pdf2pt(page.top_) / kGrid) * kGrid;
-            double tr = std::ceil(pdf2pt(page.left_ + page.width_) / kGrid) * kGrid;
-            double tb = std::ceil(pdf2pt(page.top_ + page.height_) / kGrid) * kGrid;
+            // Outward to the grid, as banal does, so the reported block always
+            // contains the real one -- a compliance check wants to err toward
+            // noticing, and conferences' tolerances are set against that bias.
+            //
+            // But round to the nearest point on the way, which is what
+            // subtracting half a point before the ceiling amounts to. These
+            // numbers are reported in whole points, so a fraction of one is
+            // below the resolution of the answer; without this a paper typeset
+            // to exactly 72pt of bottom margin, measuring 720.015 here against
+            // banal's 720.000, lost a whole 4pt grid step to fifteen
+            // thousandths of a point -- and that step was enough to cross the
+            // textblock check.
+            double tl = std::floor((pdf2pt(page.left_) + kGridSlack) / kGrid) * kGrid;
+            double tt = std::floor((pdf2pt(page.top_) + kGridSlack) / kGrid) * kGrid;
+            double tr = std::ceil((pdf2pt(page.left_ + page.width_) - kGridSlack) / kGrid) * kGrid;
+            double tb = std::ceil((pdf2pt(page.top_ + page.height_) - kGridSlack) / kGrid) * kGrid;
             pd.mt = tt;
             pd.ml = tl;
             pd.mb = pd.ph - tb;

@@ -70,9 +70,21 @@ inline int rpdffont(double pts) {
 // banal skips text at or above this HSL lightness. 220 keeps visible light
 // greys -- #d3d3d3 (211), #cccccc (204), #bfbfbf (191) all carry real
 // code-listing text -- while still catching #e5e5e5 (229) watermarks.
+// Glyph boxes this much taller than their own font size are font defects; see
+// extract.cc. The replacement is generous -- a real ascender is ~0.75em and a
+// descender ~0.25em -- because the aim is only to discard the absurd.
+constexpr double kGlyphMaxHeight = 3.0;    // box height / font size
+constexpr double kGlyphAscent = 1.0;       // clamp above the baseline
+constexpr double kGlyphDescent = 0.5;      // clamp below it
+
 constexpr unsigned kLightSkip = 220;
 constexpr int kMinNchars = 800;
 constexpr int kGrid = 4;
+// Half a point, absorbed before snapping to kGrid. Snapping outward then means
+// "round the measurement to the nearest point, then take the grid boundary
+// beyond it" -- a point being the resolution these numbers are reported at, so
+// anything finer is noise by definition rather than by assertion.
+constexpr double kGridSlack = 0.5;
 
 // How to find columns. `Gutter`, the default, looks for the vertical whitespace
 // *between* columns and cuts there. `Mode` is banal's: take the modal number of
@@ -131,6 +143,7 @@ inline bool is_ascii_space(char32_t c) {
 
 struct Run {
     double t = 0, l = 0, r = 0, b = 0;
+    double base = 0;   // baseline
     double size = 0;   // true font size, points
     double lum = 0;    // HSL lightness 0..255, alpha-composited over white
     std::string text;
@@ -177,6 +190,14 @@ struct PageSource {
     virtual RawPage page(size_t index) = 0;
 };
 
+// A MuPDF stext option by the name `--stext=` accepts, or -1 if unknown; and
+// the mask used when `--stext=` says nothing. Both live with the extractor
+// because that is the only place MuPDF's FZ_STEXT_* names are in scope --
+// keeping the mask a plain int here is what lets the rest of the program build
+// without MuPDF's headers.
+int stext_flag(std::string_view name);
+int stext_default_flags();
+
 // Both throw std::runtime_error if the input cannot be opened.
 // stext_flags is a raw FZ_STEXT_* mask, exposed for calibration.
 std::unique_ptr<PageSource> open_pdf(const std::string& filename, Rot rot,
@@ -187,6 +208,7 @@ std::unique_ptr<PageSource> open_runs(const std::string& path);
 
 struct Text {
     double l = 0, t = 0, r = 0, b = 0;   // decipoints
+    double base = 0;                     // baseline, decipoints
     int sz = 0;                          // decipoints
     unsigned nchars = 0;
     std::string text;
