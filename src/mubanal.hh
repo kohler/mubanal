@@ -93,11 +93,13 @@ struct Gutter {
 // Deliberately loose to start; the corpus is what tightens them.
 constexpr double kGutterMinWidth = 57.6;   // 0.08in, narrower than any real one
 constexpr double kColMinWidth = 576.0;     // 0.8in; 3-column text is ~91pt wide
-constexpr double kGutterClear = 0.6;       // rows a gutter must be clear over
+constexpr double kGutterClear = 0.50;      // rows a gutter must be clear over
 constexpr double kGutterOpen = 0.35;       // rows that may cross a candidate
 constexpr size_t kGutterMinRows = 4;       // fewer rows than this and we abstain
-constexpr double kGutterSupport = 1.0 / 3;  // pages a document gutter recurs on
-constexpr size_t kGutterTakeRun = 4;       // consecutive clear rows to take one
+constexpr double kGutterSupport = 1.0 / 3; // pages a document gutter recurs on
+constexpr double kColBalance = 1.5;        // widest column / narrowest, 3+ columns
+constexpr size_t kGutterTakeRun = 3;       // consecutive clear rows to take one
+constexpr double kGutterTakeClear = 0.50;  // or this fraction of rows clear
 
 // Counter map keyed by double, standing in for banal's Perl hashes. Ordered,
 // which is what makes mode() break ties toward the smaller key as banal's
