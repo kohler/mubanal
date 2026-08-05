@@ -190,7 +190,10 @@ void report_json(const Doc& doc, const ReportOpts& opt) {
                 }
             }
             std::string page_c = "\"columns\": " + std::to_string(page.ncols_);
-            if (page_c != doc_c && page.type_ != "figure" && page.type_ != "appendix") {
+            // banal withholds this from appendix pages too. We do not: an
+            // appendix has a column count worth reporting, even though it does
+            // not get to decide the document's -- see page_votes in analyze.cc.
+            if (page_c != doc_c && page.type_ != "figure") {
                 val.push_back(page_c);
             }
             // The column edges behind that count, in points, as left/right

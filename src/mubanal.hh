@@ -93,12 +93,12 @@ struct Gutter {
 // Deliberately loose to start; the corpus is what tightens them.
 constexpr double kGutterMinWidth = 57.6;   // 0.08in, narrower than any real one
 constexpr double kColMinWidth = 576.0;     // 0.8in; 3-column text is ~91pt wide
-constexpr double kGutterClear = 0.50;      // rows a gutter must be clear over
-constexpr double kGutterOpen = 0.35;       // rows that may cross a candidate
+constexpr long kGutterMinSupport = 2;      // rows that must leave a band clear
+constexpr size_t kGutterMaxPerPage = 2;    // gutters one page may propose
+constexpr size_t kDocColumnPages = 30;     // body pages that decide the document
 constexpr size_t kGutterMinRows = 4;       // fewer rows than this and we abstain
 constexpr double kGutterSupport = 1.0 / 3; // pages a document gutter recurs on
-constexpr double kColBalance = 1.5;        // widest column / narrowest, 3+ columns
-constexpr size_t kGutterTakeRun = 3;       // consecutive clear rows to take one
+constexpr double kColBalance = 2.0;        // widest column / narrowest, 3+ columns
 constexpr double kGutterTakeClear = 0.50;  // or this fraction of rows clear
 
 // Counter map keyed by double, standing in for banal's Perl hashes. Ordered,
@@ -210,8 +210,10 @@ struct Page {
     double pw_ = 0, ph_ = 0;               // page box, decipoints
     int ncols_ = 0;
     std::vector<double> colpos_;
-    // Gutter candidates and the clipped row extents behind them, kept only
-    // until the document-level pass has had its say; see Doc::calc_column_layout.
+    // Gutter candidates and the row extents behind them, kept only until the
+    // document-level pass has had its say; see Doc::calc_column_layout. The
+    // rows are moved out of the page's XMap, which is dead by then, rather than
+    // copied from it.
     std::vector<Gutter> gutters_;
     std::vector<std::vector<double>> colrows_;
     bool has_textbb_ = false;
@@ -228,7 +230,7 @@ struct Page {
     std::string type_ = "body";
 
     void calc_columns(const XMap& xmap);
-    void calc_columns_gutter(const XMap& xmap);
+    void calc_columns_gutter(XMap&& xmap);
     void accept_gutters(const std::vector<Gutter>& gutters, double l, double r);
     void calc_leading(const std::vector<Text>& texts, int bfs);
     void calc_nwords(const std::vector<Text>& texts, int bfs);
