@@ -32,15 +32,17 @@ silent corruption.
 
 `src/banal` drives poppler’s `pdftohtml` and parses its XML. That stack has a
 pathological case (documents with heavily replicated tiling patterns), and the
-Perl is hard to extend. Measured over 25 corpus documents:
+Perl is hard to extend. Mean time per document over 50 randomly chosen corpus
+documents:
 
 | Tool      | Analysis time   |
 |:----------|:----------------|
-| `perl src/banal` (including its pdftohtml subprocess) | 0.281s |
-| `mubanal` | **0.072s (3.9x faster)** |
+| `perl src/banal` (including its pdftohtml subprocess) | 0.203s |
+| `mubanal` | **0.070s (2.9x faster)** |
 
-That is essentially MuPDF’s text-extraction floor—`mutool draw -F text` alone
-costs 0.078s—so the analysis is close to free.
+MuPDF’s text-extraction floor—`mutool draw -F text` on the same documents—is
+53ms; most of the remaining 17ms is the unsafe scan’s sweep of every xref
+object (see below), and the analysis itself is close to free.
 
 ## Options
 
@@ -49,12 +51,67 @@ costs 0.078s—so the analysis is close to free.
 | `-p`, `-pagenum` | Add `"pageno"` and per-page `"headings"`          |
 | `-C`, `-colpos`  | Add `"colpos"` column positions                   |
 | `-no-time`       | omit the `"at"` timestamp (use when diffing)      |
+| `-no-unsafe`     | skip the dangerous-feature scan                   |
+| `--grep=FEATURE` | print matching FILEs' names instead of JSON       |
 | `--dump-runs`    | print the extracted run list instead of analyzing |
 | `--runs=FILE`    | analyze a stored run list instead of a PDF        |
 | `--rot=MODE`     | rotated text: `skip` (default), `skew`, `keep`    |
 | `--stext=OPTS`   | MuPDF stext options, comma separated (calibration) |
 
 The `-json` and `-zoom` options from banal are ignored.
+
+## Dangerous PDF features
+
+A submitted paper is downloaded and opened by anonymous reviewers, so
+rendering it must not run code or touch the network—a document that fetches an
+external resource on open reveals the reviewer's IP address to whoever
+controls the server. Every analysis therefore scans the PDF object graph and,
+when it finds anything, adds a top-level `"unsafe"` key mapping category names
+to the 1-based pages involved—at most the first 10, with a trailing `0`
+standing for any pages beyond them:
+
+```json
+"unsafe": {"javascript": [27,28]},
+```
+
+An *embedded* movie or sound clip is just content and does not flag;
+`multimedia` means the clip's file specification points outside the document.
+
+Findings that belong to no page (an `/OpenAction` on the catalog, the
+JavaScript name tree, XFA) report as page 1, the page showing when they fire;
+an object shared between pages reports the first page using it. Pages are
+attributed only after something is found, so clean documents never pay for
+the ownership pass.
+
+| Category      | Meaning                                                     |
+|:--------------|:------------------------------------------------------------|
+| `javascript`  | JavaScript actions or `/JS` scripts                         |
+| `launch`      | Launch actions (run an external program)                    |
+| `submitform`  | SubmitForm/ImportData actions (network form submission)     |
+| `autoaction`  | `/OpenAction` or `/AA` auto-triggering a URI or remote goto |
+| `richmedia`   | RichMedia annotations (embedded Flash/ActionScript)         |
+| `multimedia`  | movie/sound clips played from outside the file              |
+| `xfa`         | XFA forms (may script and open web connections)             |
+| `externalref` | URL file specs, external streams, reference XObjects        |
+
+Clickable URI link annotations are deliberately not flagged: a link the reader
+chooses to follow is fine; the point is what happens unprompted. The key is
+omitted entirely when nothing is found, so output for clean documents—7135 of
+7137 in the calibration corpus; the two exceptions carry embedded movies with
+JavaScript player controls—is unchanged.
+
+The scan walks every xref object rather than chasing references from the
+catalog. Parsing every object dictionary is the main cost: 13–17ms on a typical
+corpus document, ~25% on top of the rest of the analysis. `-no-unsafe` skips the
+scan, for timing and calibration; `--runs=` input carries no PDF structure and
+is never scanned.
+
+## Grep
+
+`mubanal --grep=FEATURE FILE.pdf...` sweeps a corpus, printing the names of the
+files whose analysis matches the FEATURE, and exits like grep—0 for a match, 1
+for none, 2 on failure. Supported features: `unsafe`, `error`, `problem` (error
+or warning).
 
 ## Layout
 

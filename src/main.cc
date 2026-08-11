@@ -11,26 +11,32 @@
 #include <memory>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace {
 
 constexpr const char* kVersion = "1.2";
 
 void usage(std::ostream& out) {
-    out << "usage: mubanal [-json] [-p] [-no-time] [--dump-runs] FILE.pdf\n\n"
+    out << "usage: mubanal [-json] [-p] [-no-time] [--dump-runs] FILE.pdf\n"
+           "       mubanal --grep=FEATURE FILE.pdf...\n\n"
            "  -json         print JSON output (default; the only supported mode)\n"
            "  -p, -pagenum  include page numbers and headings\n"
            "  -C, -colpos   add per-page \"colpos\", the column edges\n"
            "  -no-time      omit the \"at\" timestamp\n"
+           "  -no-unsafe    skip the dangerous-feature scan (no \"unsafe\" output)\n"
+           "  --grep=FEATURE  print each matching FILE's name instead of JSON;\n"
+           "                FEATURE: unsafe, error, problem\n"
            "  --dump-runs   print the extracted run list instead of analysing\n"
            "  --runs=FILE   analyse a stored run list instead of a PDF\n"
-           "  --columns=ALG column detection: gutter (default), mode\n"
+           "  --columns=ALG  column detection: gutter (default), mode\n"
            "  --rot=MODE    rotated text: skip (default), skew, keep\n"
-           "  --debug-columns  trace column detection on stderr\n"
+           "  --debug-columns trace column detection on stderr\n"
            "  --trim=MODE   trim run edges: ascii (default), none\n"
            "  --stext=OPTS  MuPDF stext options, comma separated (calibration);\n"
            "                accurate-bboxes is on by default, no-accurate-bboxes\n"
            "                turns it off\n"
+           "  -V, --verbose  print detailed errors and warnings to stderr\n"
            "  -version      print version\n";
 }
 
@@ -64,7 +70,9 @@ int main(int argc, char** argv) {
     Rot rot = Rot::Skip;
     Trim trim = Trim::Ascii;
     bool dump = false;
-    std::string runs_file, file;
+    bool unsafe = true;
+    std::string runs_file, grep;
+    std::vector<std::string> files;
     // Accurate bboxes by default. Without them MuPDF reports each glyph's
     // declared font box, which for a math symbol set inline in a text line can
     // be half again as tall as the line and hang well below it -- 17.3pt
@@ -86,13 +94,25 @@ int main(int argc, char** argv) {
         } else if (opt_is(a, "no-time") || opt_is(a, "notime")
                    || opt_is(a, "no-timestamp")) {
             ropt.no_time = true;
+        } else if (opt_is(a, "no-unsafe")) {
+            unsafe = false;
         } else if (opt_is(a, "zoom", &arg)) {
             // ignore (banal compatibility)
         } else if (opt_is(a, "zoom")) {
             // ignore (banal compatibility)
             i += i + 1 < argc;
+        } else if (opt_is(a, "V") || opt_is(a, "verbose")) {
+            mubanal::verbose = true;
         } else if (opt_is(a, "dump-runs")) {
             dump = true;
+        } else if (opt_is(a, "grep", &arg)) {
+            grep = arg;
+        } else if (opt_is(a, "grep")) {
+            if (i + 1 == argc) {
+                std::cerr << "mubanal: --grep requires an argument\n";
+                return 2;
+            }
+            grep = argv[++i];
         } else if (opt_is(a, "runs", &arg)) {
             runs_file = arg;
         } else if (opt_is(a, "stext", &arg)) {
@@ -141,26 +161,80 @@ int main(int argc, char** argv) {
             std::cerr << "mubanal: bad option " << a << "\n";
             usage(std::cerr);
             return 1;
-        } else if (file.empty()) {
-            file = a;
+        } else if (files.empty() || !grep.empty()) {
+            files.emplace_back(a);
         } else {
             std::cerr << "mubanal: only one input file is supported\n";
             return 1;
         }
     }
 
-    if (file.empty() && runs_file.empty()) {
+    if (files.empty() && runs_file.empty()) {
         usage(std::cerr);
         return 1;
     }
 
+    // Grep mode prints matching filenames and exits like grep: 0 match,
+    // 1 none, 2 error. `unsafe` needs only the object-graph scan, so the
+    // pages are never extracted.
+    if (!grep.empty()) {
+        if (grep != "unsafe" && grep != "problem" && grep != "error") {
+            std::cerr << "mubanal: unknown --grep argument " << grep << "\n";
+            return 2;
+        }
+        if (!runs_file.empty() || dump) {
+            std::cerr << "mubanal: --grep is incompatible with --runs and --dump-runs\n";
+            return 2;
+        }
+        if (!unsafe && grep == "unsafe") {
+            std::cerr << "mubanal: --grep unsafe conflicts with -no-unsafe\n";
+            return 2;
+        }
+        int status = 1;
+        for (const std::string& f : files) {
+            bool match = false;
+            try {
+                auto src = open_pdf(f, rot, trim, stext_flags);
+                if (grep == "unsafe") {
+                    // needs only the object-graph scan
+                    match = !src->unsafe().empty();
+                } else {
+                    // Diagnostics surface during the work -json would do:
+                    // pull every page, then scan.
+                    for (size_t p = 0; p != src->npages(); ++p) {
+                        src->page(p);
+                    }
+                    if (unsafe) {
+                        src->unsafe();
+                    }
+                    match = src->error() || (grep == "problem" && src->warning());
+                }
+            } catch (const std::exception& e) {
+                // An unopenable document reports {"error": true}, which the
+                // warning and error greps match. For unsafe it is a failure:
+                // whether it has unsafe features was not determined.
+                if (grep == "unsafe") {
+                    std::cerr << f << ": Error: " << e.what() << "\n";
+                    status = 2;
+                    continue;
+                }
+                match = true;
+            }
+            if (match) {
+                std::cout << f << "\n";
+                status = status == 1 ? 0 : status;
+            }
+        }
+        return status;
+    }
+
+    const std::string& file = runs_file.empty() ? files[0] : runs_file;
     std::unique_ptr<PageSource> src;
     try {
         src = runs_file.empty() ? open_pdf(file, rot, trim, stext_flags)
             : open_runs(runs_file);
     } catch (const std::exception& e) {
-        std::cerr << (runs_file.empty() ? file : runs_file)
-                  << ": Error: " << e.what() << "\n";
+        std::cerr << file << ": Error: " << e.what() << "\n";
         report_error(ropt);
         return 1;
     }
@@ -169,6 +243,6 @@ int main(int argc, char** argv) {
         dump_runs(*src);
         return 0;
     }
-    report_json(analyze(*src), ropt);
+    report_json(analyze(*src, unsafe), ropt);
     return 0;
 }

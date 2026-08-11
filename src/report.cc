@@ -7,6 +7,7 @@
 
 #include "mubanal.hh"
 
+#include <algorithm>
 #include <cstdio>
 #include <ctime>
 #include <iostream>
@@ -155,10 +156,37 @@ void report_json(const Doc& doc, const ReportOpts& opt) {
     if (!opt.no_time) {
         o << "  \"at\": " << long(std::time(nullptr)) << ",\n";
     }
+    // MuPDF diagnostics: "error" if any were errors, else "warning". The
+    // document still analyzed -- an unopenable one goes to report_error.
+    if (doc.error_) {
+        o << "  \"error\": true,\n";
+    } else if (doc.warning_) {
+        o << "  \"warning\": true,\n";
+    }
     o << "  " << doc_ps << ",\n  " << doc_margin << ",\n  " << doc_bfs
       << ",\n  " << doc_l << ",\n  " << doc_c << ",\n";
     if (nummargin < 10000) {
         o << "  \"nummargin\": " << f0(nummargin) << ",\n";
+    }
+    // Omitted when empty, so clean documents keep byte-identical output.
+    // Categories are fixed ASCII identifiers needing no escaping; each list
+    // shows up to 10 pages, a trailing 0 standing for the rest.
+    if (!doc.unsafe_.empty()) {
+        o << "  \"unsafe\": {";
+        const char* usep = "";
+        for (const auto& [category, upages] : doc.unsafe_) {
+            o << usep << "\"" << category << "\": [";
+            size_t un = std::min(upages.size(), size_t(10));
+            for (size_t k = 0; k < un; ++k) {
+                o << (k ? "," : "") << upages[k];
+            }
+            if (upages.size() > 10) {
+                o << ",0";
+            }
+            o << "]";
+            usep = ", ";
+        }
+        o << "},\n";
     }
     o << "  \"w\": " << nwords << ",\n  \"pages\": [";
 

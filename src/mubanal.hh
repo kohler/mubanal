@@ -180,6 +180,30 @@ enum class Rot { Skip, Skew, Keep };
 // None exists for diagnostics; it is how the scan above was taken.
 enum class Trim { Ascii, None };
 
+// Dangerous PDF features: category -> sorted 1-based pages involved. A
+// submitted paper is opened by anonymous reviewers, so rendering it must not
+// run code or touch the network -- fetching an external resource on open
+// reveals the reviewer's IP address. Document-level features (a catalog
+// OpenAction, the JavaScript name tree, XFA) report as page 1, the page
+// showing when they fire. Each list holds at most the 11 smallest pages: the
+// report prints 10 plus a trailing 0 meaning "more", and an 11th proves the
+// 0. Categories (extract.cc has the exact triggers):
+//
+//   javascript  JavaScript actions or /JS scripts
+//   launch      Launch actions (run an external program)
+//   submitform  SubmitForm/ImportData actions (network form submission)
+//   autoaction  OpenAction or /AA that auto-triggers a URI or remote goto
+//   richmedia   RichMedia annotations (embedded Flash/ActionScript)
+//   multimedia  movie/sound clips played from outside the file; an
+//               embedded clip is just content and does not flag
+//   xfa         XFA forms (may script and open web connections)
+//   externalref URL file specs, external streams, reference XObjects --
+//               content pulled from outside the file when rendering
+//
+// Click-through URI links are deliberately absent: a link the reader chooses
+// to follow is fine; the point is what happens unprompted.
+using UnsafeMap = std::map<std::string, std::vector<long>>;
+
 // Pages are pulled one at a time and analysed immediately, so a document's full
 // text is never resident. Holding every run of a long submission at once costs
 // tens of megabytes for no benefit -- nothing outside the per-page pass looks at
@@ -191,6 +215,18 @@ struct PageSource {
     // RawPage rather than throwing, which is what banal does when pdftohtml
     // emits a partial page.
     virtual RawPage page(size_t index) = 0;
+    // Dangerous features; empty for run lists, which have no PDF structure.
+    virtual UnsafeMap unsafe() const {
+        return {};
+    }
+    // Whether MuPDF has reported an error/warning for this document so far;
+    // both accumulate as pages are pulled.
+    virtual bool error() const {
+        return false;
+    }
+    virtual bool warning() const {
+        return false;
+    }
 };
 
 // A MuPDF stext option by the name `--stext=` accepts, or -1 if unknown; and
@@ -269,6 +305,8 @@ struct Page {
 struct Doc {
     std::vector<Page> pages_;             // Page::num is 1-based; this is not
     double pw_ = 0, ph_ = 0;               // doc page box, decipoints
+    UnsafeMap unsafe_;
+    bool error_ = false, warning_ = false;   // MuPDF diagnostics; see report
     int ncols_ = 0;
     std::optional<int> bodyfontsize_;
     int max_bodyfontsize_ = 0;
@@ -299,7 +337,8 @@ struct Doc {
     void calc_column_layout();
 };
 
-Doc analyze(PageSource& src);
+// `unsafe = false` skips the dangerous-feature scan (calibration, timing).
+Doc analyze(PageSource& src, bool unsafe = true);
 
 // ------------------------------------------------------------------ report
 
@@ -312,6 +351,8 @@ struct ReportOpts {
 void report_json(const Doc& doc, const ReportOpts& opt);
 void report_error(const ReportOpts& opt);
 void dump_runs(PageSource& src);
+
+extern bool verbose;
 
 }  // namespace mubanal
 

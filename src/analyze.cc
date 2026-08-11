@@ -1965,7 +1965,7 @@ void Doc::analyze_page(Page& page, const RawPage& rp) {
     }
 }
 
-Doc analyze(PageSource& src) {
+Doc analyze(PageSource& src, bool unsafe) {
     Doc doc;
     size_t np = src.npages();
     doc.pages_.resize(np);
@@ -1978,6 +1978,13 @@ Doc analyze(PageSource& src) {
         doc.analyze_page(page, src.page(pi));
         doc.merge_page(page);
     }
+
+    // After the page loop: the scan then sweeps a mostly cached object graph.
+    if (unsafe) {
+        doc.unsafe_ = src.unsafe();
+    }
+    doc.error_ = src.error();
+    doc.warning_ = src.warning();
 
     doc.calc_page_types();
     if (column_algo == ColumnAlgo::Gutter) {
