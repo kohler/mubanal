@@ -190,7 +190,10 @@ enum class Trim { Ascii, None };
 // 0. Categories (extract.cc has the exact triggers):
 //
 //   javascript  JavaScript actions or /JS scripts
-//   launch      Launch actions (run an external program)
+//   launch      Launch actions that can run a program: a command form,
+//               an absolute or URL path, or an executable target
+//   rellaunch   Launch of a bare relative document path (artifact links
+//               like run:./proof.v:164); advisory
 //   submitform  SubmitForm/ImportData actions (network form submission)
 //   autoaction  OpenAction or /AA that auto-triggers a URI or remote goto
 //   richmedia   RichMedia annotations (embedded Flash/ActionScript)
@@ -201,7 +204,9 @@ enum class Trim { Ascii, None };
 //               content pulled from outside the file when rendering
 //
 // Click-through URI links are deliberately absent: a link the reader chooses
-// to follow is fine; the point is what happens unprompted.
+// to follow is fine; the point is what happens unprompted. `rellaunch` is
+// advisory -- worth surfacing, not grounds for rejection -- and so is
+// `multimedia` when it appears without `externalref`.
 using UnsafeMap = std::map<std::string, std::vector<long>>;
 
 // Pages are pulled one at a time and analysed immediately, so a document's full
@@ -352,7 +357,7 @@ void report_json(const Doc& doc, const ReportOpts& opt);
 void report_error(const ReportOpts& opt);
 void dump_runs(PageSource& src);
 
-extern bool verbose;
+extern int verbose;
 
 }  // namespace mubanal
 

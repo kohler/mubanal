@@ -36,7 +36,8 @@ void usage(std::ostream& out) {
            "  --stext=OPTS  MuPDF stext options, comma separated (calibration);\n"
            "                accurate-bboxes is on by default, no-accurate-bboxes\n"
            "                turns it off\n"
-           "  -V, --verbose  print detailed errors and warnings to stderr\n"
+           "  -V, --verbose  print detailed errors and warnings to stderr;\n"
+           "                twice: also print unsafe scripts\n"
            "  -version      print version\n";
 }
 
@@ -102,7 +103,7 @@ int main(int argc, char** argv) {
             // ignore (banal compatibility)
             i += i + 1 < argc;
         } else if (opt_is(a, "V") || opt_is(a, "verbose")) {
-            mubanal::verbose = true;
+            ++mubanal::verbose;
         } else if (opt_is(a, "dump-runs")) {
             dump = true;
         } else if (opt_is(a, "grep", &arg)) {

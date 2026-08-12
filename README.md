@@ -86,7 +86,8 @@ the ownership pass.
 | Category      | Meaning                                                     |
 |:--------------|:------------------------------------------------------------|
 | `javascript`  | JavaScript actions or `/JS` scripts                         |
-| `launch`      | Launch actions (run an external program)                    |
+| `launch`      | Launch that can run a program: command form, absolute or URL path, executable target |
+| `rellaunch`   | Launch of a bare relative document path (`run:./proof.v` artifact links) |
 | `submitform`  | SubmitForm/ImportData actions (network form submission)     |
 | `autoaction`  | `/OpenAction` or `/AA` auto-triggering a URI or remote goto |
 | `richmedia`   | RichMedia annotations (embedded Flash/ActionScript)         |
@@ -95,10 +96,16 @@ the ownership pass.
 | `externalref` | URL file specs, external streams, reference XObjects        |
 
 Clickable URI link annotations are deliberately not flagged: a link the reader
-chooses to follow is fine; the point is what happens unprompted. The key is
-omitted entirely when nothing is found, so output for clean documents—7135 of
-7137 in the calibration corpus; the two exceptions carry embedded movies with
-JavaScript player controls—is unchanged.
+chooses to follow is fine; the point is what happens unprompted. `rellaunch`
+is advisory—worth surfacing, not grounds for rejection—and so is `multimedia`
+when it appears without `externalref`; every other category warrants a human
+look. The key is omitted entirely when nothing is found, so output for clean
+documents—7137 of 7146 in the calibration corpus—is unchanged. The exceptions
+split cleanly along that severity line: `javascript` catches embedded-movie
+player controls, ACM/JSTOR reference-linking scripts, and form-field
+formatters, while `rellaunch` catches papers linking their verification
+artifacts (`run:./proof.v:164`) and proceedings-CD navigation
+(`../TOC.pdf`).
 
 The scan walks every xref object rather than chasing references from the
 catalog. Parsing every object dictionary is the main cost: 13–17ms on a typical

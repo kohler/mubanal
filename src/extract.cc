@@ -30,6 +30,8 @@
 #include <mupdf/functions.h>
 
 #include <algorithm>
+#include <cctype>
+#include <cstdio>
 #include <cstring>
 #include <iterator>
 #include <mutex>
@@ -38,7 +40,7 @@
 
 namespace mubanal {
 
-bool verbose = false;
+int verbose = 0;
 
 namespace {
 
@@ -167,6 +169,52 @@ bool name_in(::pdf_obj* obj, std::initializer_list<const char*> names) {
     return false;
 }
 
+// The dangerous Launch names a command form (/Win, /Mac, /Unix carry
+// parameters), an absolute or URL path, an executable, or no target the scan
+// can vouch for. What remains -- a bare relative document path -- only asks
+// the viewer to open a file, which is how verification papers link lemmas to
+// their artifact (`run:./proof.v:164`), and reports as advisory "rellaunch"
+// instead.
+const char* launch_category(::pdf_obj* d) {
+    if (mupdf::ll_pdf_dict_gets(d, "Win") || mupdf::ll_pdf_dict_gets(d, "Mac")
+        || mupdf::ll_pdf_dict_gets(d, "Unix")) {
+        return "launch";
+    }
+    ::pdf_obj* f = mupdf::ll_pdf_dict_gets(d, "F");
+    if (mupdf::ll_pdf_is_dict(f)) {
+        ::pdf_obj* uf = mupdf::ll_pdf_dict_gets(f, "UF");
+        f = mupdf::ll_pdf_is_string(uf) ? uf : mupdf::ll_pdf_dict_gets(f, "F");
+    }
+    if (!mupdf::ll_pdf_is_string(f)) {
+        return "launch";
+    }
+    std::string path = mupdf::ll_pdf_to_text_string(f);
+    for (char& c : path) {
+        c = char(std::tolower((unsigned char) c));
+    }
+    // hyperref's run: scheme appends a :line suffix
+    size_t colon = path.find_last_of(':');
+    if (colon != std::string::npos
+        && path.find_first_not_of("0123456789", colon + 1) == std::string::npos) {
+        path.erase(colon);
+    }
+    if (path.empty() || path[0] == '/' || path[0] == '\\'
+        || path.find("://") != std::string::npos
+        || (path.size() > 2 && path[1] == ':'
+            && (path[2] == '/' || path[2] == '\\'))) {
+        return "launch";
+    }
+    for (const char* ext : {".exe", ".bat", ".cmd", ".com", ".scr", ".pif",
+                            ".msi", ".ps1", ".vbs", ".js", ".jar", ".app",
+                            ".sh", ".command"}) {
+        size_t n = std::strlen(ext);
+        if (path.size() >= n && path.compare(path.size() - n, n, ext) == 0) {
+            return "launch";
+        }
+    }
+    return "rellaunch";
+}
+
 // Whether a media file specification names data outside the file. A dict
 // filespec with /EF embeds its data; a stream is a form XObject standing in
 // for the clip, also embedded; a bare string is always a path.
@@ -227,6 +275,7 @@ private:
     int nobj_ = 0;
     int cur_ = 0;                  // object number being swept, for flag()
     std::vector<std::pair<const char*, int>> found_;   // (category, objnum)
+    std::set<int> dumped_;         // scripts already printed by dump_script
     std::vector<int> owner_;       // object number -> 1-based page, 0 unknown
     std::vector<::pdf_obj*> claim_;   // worklist of resolved objects to claim
     // Prevent infinite nesting and infinite /Next chain walking
@@ -235,6 +284,64 @@ private:
 
     void flag(const char* category) {
         found_.emplace_back(category, cur_);
+    }
+
+    // -V -V: a Launch action's target is as telling as a script's text.
+    // /F is the file spec (dict or bare string); /Win carries the Windows
+    // command form with its parameters.
+    void dump_launch(::pdf_obj* d, const char* cat) {
+        if (verbose < 2) {
+            return;
+        }
+        ::pdf_obj* f = mupdf::ll_pdf_dict_gets(d, "F");
+        if (mupdf::ll_pdf_is_dict(f)) {
+            ::pdf_obj* uf = mupdf::ll_pdf_dict_gets(f, "UF");
+            f = mupdf::ll_pdf_is_string(uf) ? uf : mupdf::ll_pdf_dict_gets(f, "F");
+        }
+        std::fprintf(stderr, "%s (object %d):", cat, cur_);
+        if (mupdf::ll_pdf_is_string(f)) {
+            std::fprintf(stderr, " %s", mupdf::ll_pdf_to_text_string(f));
+        }
+        ::pdf_obj* win = mupdf::ll_pdf_dict_gets(d, "Win");
+        if (mupdf::ll_pdf_is_dict(win)) {
+            for (const char* key : {"F", "P"}) {
+                ::pdf_obj* v = mupdf::ll_pdf_dict_gets(win, key);
+                if (mupdf::ll_pdf_is_string(v)) {
+                    std::fprintf(stderr, " %s", mupdf::ll_pdf_to_text_string(v));
+                }
+            }
+        }
+        std::fputc('\n', stderr);
+    }
+
+    // -V -V: show what a flagged script actually says. One stream is often
+    // shared by many annotations (every player button of an embedded movie),
+    // so indirect scripts print once.
+    void dump_script(::pdf_obj* d) {
+        if (verbose < 2) {
+            return;
+        }
+        ::pdf_obj* js = mupdf::ll_pdf_dict_gets(d, "JS");
+        int num = mupdf::ll_pdf_is_indirect(js) ? mupdf::ll_pdf_to_num(js) : 0;
+        if (num && !dumped_.insert(num).second) {
+            return;
+        }
+        if (mupdf::ll_pdf_is_string(js)) {
+            std::fprintf(stderr, "javascript (object %d):\n%s\n",
+                         cur_, mupdf::ll_pdf_to_text_string(js));
+        } else if (mupdf::ll_pdf_is_stream(js)) {
+            ::fz_buffer* buf = mupdf::ll_pdf_load_stream(js);
+            // string_from_buffer may grow the buffer and throw, so the
+            // reference is guarded like the sweep's object.
+            struct Guard {
+                ::fz_buffer* buf;
+                ~Guard() {
+                    mupdf::ll_fz_drop_buffer(buf);
+                }
+            } guard{buf};
+            std::fprintf(stderr, "javascript (object %d):\n%s\n",
+                         num, mupdf::ll_fz_string_from_buffer(buf));
+        }
     }
 
     // Findings carry object numbers; the report wants pages. Ownership is
@@ -365,8 +472,11 @@ private:
         ::pdf_obj* s = mupdf::ll_pdf_dict_gets(d, "S");
         if (name_is(s, "JavaScript")) {
             flag("javascript");
+            dump_script(d);
         } else if (name_is(s, "Launch")) {
-            flag("launch");
+            const char* cat = launch_category(d);
+            flag(cat);
+            dump_launch(d, cat);
         } else if (name_in(s, {"SubmitForm", "ImportData"})) {
             flag("submitform");
         } else if (name_is(s, "RichMediaExecute")) {
@@ -380,6 +490,7 @@ private:
             // a script outside a well-formed JavaScript action: a Rendition
             // action's /JS, or an action missing its /S
             flag("javascript");
+            dump_script(d);
         }
 
         ::pdf_obj* subtype = mupdf::ll_pdf_dict_gets(d, "Subtype");
@@ -408,8 +519,8 @@ private:
 
         // Auto-triggered actions: /OpenAction at document open, /AA entries
         // on open/close/visibility events. Scripts inside them are flagged
-        // above wherever they live; what is left is the URI or remote goto
-        // that is harmless as a clicked link but leaks unprompted here.
+        // above wherever they live; what is left is the URI, remote goto,
+        // or launch that is tame as a clicked link but not fired unprompted.
         check_trigger(mupdf::ll_pdf_dict_gets(d, "OpenAction"), depth);
         ::pdf_obj* aa = mupdf::ll_pdf_dict_gets(d, "AA");
         if (mupdf::ll_pdf_is_dict(aa)) {
@@ -426,7 +537,7 @@ private:
             return;
         }
         if (name_in(mupdf::ll_pdf_dict_gets(action, "S"),
-                    {"URI", "GoToR", "GoToE"})) {
+                    {"URI", "GoToR", "GoToE", "Launch"})) {
             flag("autoaction");
         }
         // /Next chains successor actions (one or an array), so a benign
