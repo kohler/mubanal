@@ -152,18 +152,11 @@ ExternalProject_Add(mupdf_external
   USES_TERMINAL_DOWNLOAD ON
   USES_TERMINAL_BUILD    ON)
 
-# mutool comes along with the libraries and is useful for comparison, but it is
-# buried several directories down in MuPDF's own build tree. Link it next to
-# mubanal. build-mupdf.sh gives it absolute library references, so it works
-# through the symlink like any other name for the file.
-set(MUPDF_MUTOOL "${CMAKE_BINARY_DIR}/mutool${CMAKE_EXECUTABLE_SUFFIX}")
-add_custom_command(OUTPUT "${MUPDF_MUTOOL}"
-  COMMAND ${CMAKE_COMMAND} -E create_symlink
-          "${_mupdf_out}/mutool${CMAKE_EXECUTABLE_SUFFIX}" "${MUPDF_MUTOOL}"
-  DEPENDS "${_mupdf_out}/mutool${CMAKE_EXECUTABLE_SUFFIX}"
-  COMMENT "Linking mutool into ${CMAKE_BINARY_DIR}"
-  VERBATIM)
-add_custom_target(mupdf_mutool ALL DEPENDS "${MUPDF_MUTOOL}")
+# mutool comes along with the libraries, and is worth installing beside mubanal:
+# it is the reference the extraction is compared against. build-mupdf.sh gives
+# it absolute library references, exactly as mubanal's INSTALL_RPATH does, so
+# the installed copy runs from wherever it lands.
+set(MUPDF_MUTOOL "${_mupdf_out}/mutool${CMAKE_EXECUTABLE_SUFFIX}")
 
 # The C++ headers are generated beside the C ones rather than merged into them.
 set(MUPDF_INCLUDE_DIRS

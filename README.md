@@ -19,8 +19,9 @@ harfbuzz, openjpeg, libjpeg, jbig2dec, zlib, gumbo, brotli), give
 always uses bundled dependencies.)
 
 Nothing is installed: `mubanal` links against the libraries where they are
-built. The MuPDF build also produces a `mutool`, which is linked as
-`build/mutool` and, like `mubanal`, can be run from any directory.
+built. The MuPDF build also produces a `mutool`, in
+`build/mupdf-src/build/shared-release`, which like `mubanal` can be run from any
+directory; `cmake --install build` installs it alongside `mubanal`.
 
 **`NDEBUG` must match how MuPDF was built.** The generated C++ headers declare
 some destructors only `#ifndef NDEBUG`, so a mismatch fails to link with missing

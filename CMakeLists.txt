@@ -62,3 +62,9 @@ if(NOT MSVC)
 endif()
 
 install(TARGETS mubanal RUNTIME DESTINATION bin)
+
+if(MUPDF_BUILD)
+  # Not a CMake target, so name the file; the install step runs after `all`,
+  # which builds it.
+  install(PROGRAMS ${MUPDF_MUTOOL} DESTINATION bin)
+endif()
