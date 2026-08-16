@@ -1,8 +1,9 @@
 #!/bin/sh
-# build-mupdf.sh SRCDIR JOBS [MAKEVAR=VALUE...] -- build MuPDF and its C++
-# bindings in place. The trailing arguments are make variables chosen by
-# cmake/BuildMuPDF.cmake: USE_SYSTEM_LIBS, plus a USE_SYSTEM_<LIB>=no for each
-# library it could not find.
+# build-mupdf.sh SRCDIR JOBS OUTDIR [MAKEVAR=VALUE...] -- build MuPDF and its
+# C++ bindings in place. OUTDIR is the directory the build lands in, named by
+# cmake/BuildMuPDF.cmake. The trailing arguments are make variables chosen by
+# the same file: USE_SYSTEM_LIBS, plus a USE_SYSTEM_<LIB>=no for each library it
+# could not find.
 #
 # Driven by cmake/BuildMuPDF.cmake; see that file for why nothing is installed.
 #
@@ -16,7 +17,8 @@ set -eu
 
 srcdir=$1
 jobs=$2
-shift 2
+out=$3
+shift 3
 
 venv=$srcdir/.mubanal-venv
 if [ ! -x "$venv/bin/python3" ]; then
@@ -28,7 +30,37 @@ fi
 PATH=$venv/bin:$PATH
 export PATH
 
+# mutool is built alongside the libraries, and MuPDF links it as it links
+# everything else in the build tree: on macOS against a *relative* install name,
+# elsewhere with no rpath at all. Either way it only runs with the build
+# directory as the working directory, or not at all. cmake/BuildMuPDF.cmake
+# gives mubanal absolute references to the same libraries; give mutool the same
+# treatment here, where its link flags are.
+case $(uname -s) in
+  Darwin)
+    # The reference cannot be fixed at link time -- MuPDF's LDFLAGS reach the
+    # library as a plain path, and that path is what becomes the load command --
+    # so it is rewritten below instead, which needs slack in the Mach-O header
+    # for the longer string.
+    set -- "$@" XEXE_LDFLAGS=-Wl,-headerpad_max_install_names
+    ;;
+  *)
+    # As for mubanal: DT_RPATH rather than the modern linker's DT_RUNPATH, so
+    # the search path also applies to libraries loaded on libmupdf's behalf.
+    set -- "$@" "XEXE_LDFLAGS=-Wl,-rpath,$out -Wl,--disable-new-dtags"
+    ;;
+esac
+
+# Those flags only take effect at the link, which make will skip for an
+# executable left over from a build that did not have them.
+rm -f "$out/mutool"
+
 # HAVE_X11/HAVE_GLUT off keeps the viewer's dependencies out. build=release
 # defines NDEBUG, which is what the MUPDF_NDEBUG build option expects.
 cd "$srcdir"
-exec make -j"$jobs" HAVE_X11=no HAVE_GLUT=no build=release VENV_FLAG= "$@" c++
+make -j"$jobs" HAVE_X11=no HAVE_GLUT=no build=release VENV_FLAG= "$@" c++
+
+if [ "$(uname -s)" = Darwin ]; then
+    install_name_tool -change "${out#"$srcdir/"}/libmupdf.dylib" \
+        "$out/libmupdf.dylib" "$out/mutool"
+fi
